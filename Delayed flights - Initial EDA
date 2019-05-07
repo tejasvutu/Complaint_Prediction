@@ -1,0 +1,75 @@
+setwd("/Delta_Airlines/Raw")
+
+#library calls
+library(dplyr)
+library(lubridate)
+library(data.table)
+library(ggplot2)
+load("trial1.RData")
+#initial data manipulations
+
+df <- read.csv("DLY_CANX_LEG_STN_DT_Filters.csv",stringsAsFactors = F)
+#df <- as.data.frame(df)
+#detach("package:data.table", unload=TRUE)
+names(df) <- gsub("\\.", "_", tolower(names(df)))
+str(df)
+names_col<-colnames(df)
+#initial date column conversions
+df$flt_orig_dt <- as.POSIXct(df$flt_orig_dt,format = '%m/%d/%y')
+str(df$flt_orig_dt)
+
+unique(month(df$flt_orig_dt))
+
+df$schd_arr_gts <- as.POSIXct(df$schd_arr_gts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+df$schd_dprt_gts <- as.POSIXct(df$schd_dprt_gts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+df$actl_arr_gts <- as.POSIXct(df$actl_arr_gts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+df$actl_dprt_gts <- as.POSIXct(df$actl_dprt_gts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+
+
+
+
+df_arr_dly <- df %>% filter(actl_arr_gts > schd_arr_gts) %>% 
+  mutate(arr_dly = as.numeric( difftime(actl_arr_gts,schd_arr_gts,"min")))
+
+df_dprt_dly <- df %>% filter(actl_dprt_gts > schd_dprt_gts) %>% 
+  mutate(dprt_dly = as.numeric(difftime(actl_dprt_gts,schd_dprt_gts,"min")))
+
+mean(df_arr_dly$arr_dly)
+mean(df_dprt_dly$dprt_dly)
+
+
+#hist(df_arr_dly$arr_dly,breaks = seq(0,3100,l=100)) ----- checking the hist  plot
+hist(df_arr_dly$arr_dly,breaks = seq(min(df_arr_dly$arr_dly),max(df_arr_dly$arr_dly),by=((max(df_arr_dly$arr_dly) - min(df_arr_dly$arr_dly))/(length(df_arr_dly$arr_dly)-1))))
+
+# analyzing the arrival delays across some of the dimensions
+
+#delay division:
+dly_div <- df_arr_dly %>% group_by(dly_div_cd) %>% 
+  summarise(delays = n())
+# -- blank is an issue!! didnt come up in python : why?
+
+
+unique(df_arr_dly$dly_div_cd)
+
+
+
+## Cancellations:
+
+cxn <- df[which(df$cxn_ct==1),]
+str(df$cxn_ct)
+
+cxn_grp <- cxn %>% group_by(cxn_grp_cd) %>% 
+  summarise(cancellations = n())
+
+save.image("Apr18th.RData")
+
+
+## Basic EDA as per plan:
+
+dim(df)
+
+library(dataQualityR)
+dataQualityR::checkDataQuality(df,out.file.num = "numerical.csv","categ.csv")
+
+
+
