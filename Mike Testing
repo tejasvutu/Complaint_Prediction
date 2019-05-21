@@ -1,0 +1,99 @@
+## Testing Mike's clarification --- ##
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+getwd()
+##pulling in PNR cons
+
+pnr <- fread("/data/IDS/Pnr_cons.csv")
+pnr <- as.data.table(pnr)
+
+unique(pnr$cur_seat_status_cd)
+level <- pnr %>% distinct (pnr_recloc,pnr_create_dt,flt_orig_dt,upgrade_cd,downgrade_ind,schd_orig_stn_cd,schd_dest_stn_cd,
+                           flt_nb,given_name_nbr,surname_nbr,seat_assignment,ownr_crr_cd,cur_seat_status_cd ,cbn_cd,itin_seg_nbr,
+                           first_leg_dep_dt)  ## IS LEVEL - CHECKed
+
+## Trying data.table aggregation -- hopefully faster? -- super faster!
+check <- pnr[, .(count = .N), by = c("pnr_recloc","pnr_create_dt","flt_orig_dt","upgrade_cd","downgrade_ind","schd_orig_stn_cd",
+                                     "schd_dest_stn_cd","flt_nb","given_name_nbr","surname_nbr","seat_assignment",
+                                     "ownr_crr_cd","cbn_cd","itin_seg_nbr","first_leg_dep_dt")]
+
+## Way too slow compared to data.table aggregation 
+#check <- pnr %>% group_by(pnr_recloc,pnr_create_dt,flt_orig_dt,upgrade_cd,downgrade_ind,schd_orig_stn_cd,schd_dest_stn_cd,
+ #                         flt_nb,given_name_nbr,surname_nbr,seat_assignment,ownr_crr_cd ,cbn_cd,itin_seg_nbr,
+  #                        first_leg_dep_dt) %>% summarise(counts = n())
+
+
+
+singles <- check %>% filter(count ==1) ## Pointless check -- but useful for getting the CI's
+check2 <- inner_join (singles,pnr,by = c("pnr_recloc","pnr_create_dt","flt_orig_dt","upgrade_cd","downgrade_ind","schd_orig_stn_cd",
+                                         "schd_dest_stn_cd","flt_nb","given_name_nbr","surname_nbr","seat_assignment",
+                                         "ownr_crr_cd","cbn_cd","itin_seg_nbr","first_leg_dep_dt"))
+unique(check2$cur_seat_status_cd)
+rm(singles,check2)
+
+poly <- check %>% filter(count>1)
+check3 <- inner_join(poly, pnr, by = c("pnr_recloc","pnr_create_dt","flt_orig_dt","upgrade_cd","downgrade_ind","schd_orig_stn_cd",
+                                       "schd_dest_stn_cd","flt_nb","given_name_nbr","surname_nbr","seat_assignment",
+                                       "ownr_crr_cd","cbn_cd","itin_seg_nbr","first_leg_dep_dt"))
+
+unique(check3$cur_seat_status_cd)
+
+# picking up weird ones and checking --
+
+max(poly$count)
+weird <- poly %>% filter(count ==5)
+idiot <- pnr %>% filter(pnr_recloc == "G68GFT")
+
+
+
+## For now -- filter only those people who have ON or singles with CI -- could be important later on --
+
+singles_filt <- singles %>% filter
+
+## removing PNR from the enviro --
+## reading in the ADS --
+
+ads <- (fread("/data/IDS/ads_final.csv"))
+ads <- ads %>% filter(cur_seat_status_cd == "ON")
+
+
+## checking if all polys have either CI or ON atleast
+poly_df <- as.data.frame(check3$cur_seat_status_cd)
+poly_df$cur_seat <- as.character(poly_df$cur_seat)
+poly_df_filt <-  poly_df %>% filter(cur_seat %in% c("ON","CI"))
+
+
+
+str(poly_df) <- "cur_seat"
+
+#pnr SNAP CANX checking cur_seat status
+pnr_canx <- as.data.frame(fread("/data/clean_files/PNR_LEG_SEAT_snap_Canx_clean.csv"))
+pnr_canx$V1 <- NULL
+unique(pnr_canx$`Cur Seat Status Cd`)
+names(pnr_canx) <- gsub(" ","_",tolower(names(pnr_canx)))
+
+idiots <- pnr_canx %>% filter(`Cur Seat Status Cd` == "ON")
+samp <- head(idiots)
+
+# checking the same people in the flights data 
+
+flt <- read.csv("/data/clean_files/DLY_CANX_LEG_STN_DT_Filters_clean.csv",stringsAsFactors = F)
+flt_filt <- flt %>% filter(ownr_crr_cd == "OO" & flt_orig_dt == "2018-04-03" & flt_nb == 4463 & 
+                             schd_orig_stn_cd == "MSP" & schd_dest_stn_cd == "OMA")
+
+
+##join check --
+check <- inner_join(flt, pnr_canx, by = c("ownr_crr_cd", "flt_orig_dt", "flt_nb", "schd_orig_stn_cd", "schd_dest_stn_cd") )
+unique(check$cxn_ct)
+waste_flt <- check %>% filter(cxn_ct ==0)
+
+flt$flt_orig_dt <- as.Date(flt$flt_orig_dt, format = "%Y-%m-%d")
+str(pnr_canx$flt_orig_dt)
+
+pnr_canx$flt_orig_dt <-  as.Date(pnr_canx$flt_orig_dt, format = "%m/%d/%y")
+
+
+
+
