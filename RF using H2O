@@ -1,0 +1,215 @@
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+# ---------modeling on loyalty members for now-------#
+ads <- fread("/data/IDS/ads_20190516.csv")
+
+
+ads_new <- ads %>% filter(is.na(madeup_cust_id) == F)
+
+ads_new <- ads_new %>% select  ()
+
+str(ads_new$madeup_cust_id)
+
+rm(ads)
+table(ads_new$gndr_typ_cd)
+table(ads_new$gndr_cd)
+
+
+
+
+set.seed(1234)
+train_ind <- sample(1:nrow(ads_new), 0.9*nrow(ads_new))
+
+summary(ads_new$age)
+ads_new$age[is.na(ads_new$age)] <- 49.27
+
+ads_new$age = 2019 - ads_new$brth_yr
+ads_new_skim <- ads_new %>% select(arr_dly, dprt_dly, dly_div_cd, dly_fctr_cd, blk_dly, tot_taxi,
+                                   case_flag, cxn_ct, cxn_grp_cd, cxn_div_cd, cxn_fctr_cd,
+                                   flt_dvrn_ct, lftm_spnt_rev_usd_amt, lftm_crdd_fmi_ct,
+                                   tot_mbsp_pgm_mi_ct, mbsp_dur, gndr_typ_cd, age)
+
+str(ads_new_skim)
+getwd()
+
+ads_new_skim <- ads_new_skim %>% mutate_if(is.character,as.factor)
+ads_new_skim$case_flag <- as.factor(ads_new_skim$case_flag)
+train <- ads_new_skim[train_ind,]
+test <- ads_new_skim[-train_ind,]
+
+table(train$case_flag)
+table(test$case_flag)
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+rm(ads_new)
+x.indep <- c(1:6,8:18)
+y.indep <- 7
+library(h2o)
+
+model_rf <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, ntrees = 25, mtries = 3, max_depth = 5, seed = 1234)
+h2o.varimp(model_rf)
+
+# prediction
+predict.rforest <- as.data.frame(h2o.predict(model_rf, test.h2o))
+new_test <- cbind(test,predict.rforest)
+new_test <- new_test %>% mutate(flagging = ifelse(case_flag == 1 & predict==1, "TP",ifelse(case_flag == 0 & predict==0,"TN",ifelse(case_flag == 0 & predict==1,"FP","FN"))))
+checking <- new_test %>% group_by(flagging) %>% summarise(counts = n())
+
+## accuracy is 25%
+
+
+## checking other model parameters
+h2o.performance(model_rf)
+plot(model_rf)
+titanicH2oTree = h2o.getModelTree(model = model_rf, tree_number = 1)
+
+library(data.tree)
+
+
+## grid plot
+
+rf_grid <- h2o.getGrid(grid_id = "gbm_grid_1tree",
+                       sort_by = "auc",
+                       decreasing = TRUE)
+
+plot(h2o.performance(model_rf),valid=T, type='roc')
+
+
+
+## increasing number of trees ---
+model_rf2 <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, ntrees = 200, mtries = 3, max_depth = 6, seed = 1234)
+
+predict.rforest2 <- as.data.frame(h2o.predict(model_rf2, test.h2o))
+new_test2 <- cbind(test,predict.rforest2)
+new_test2 <- new_test2 %>% mutate(flagging = ifelse(case_flag == 1 & predict==1, "TP",ifelse(case_flag == 0 & predict==0,"TN",ifelse(case_flag == 0 & predict==1,"FP","FN"))))
+checking2 <- new_test2 %>% group_by(flagging) %>% summarise(counts = n())
+
+
+h2o.performance(model_rf2)
+plot(h2o.performance(model_rf2),valid=T, type='roc')
+var_imp2 <- h2o.varimp(model_rf2)
+
+
+
+## Undersampling ----
+
+#library(ROSE)
+
+#data_balanced_both <- ovun.sample(cls ~ ., data = train, method = "both", p=0.5, N=nrow(train), seed = 1)$data
+
+
+
+str(ads_new_skim)
+
+age <- ads_new_skim$age
+
+age <- age[age<100]
+
+max(age)
+hist(age)
+unique(ads_new_skim$gndr_typ_cd)
+
+
+
+## removing random outliers from age and gender
+ads_new_skim
+
+summary(ads_new_skim$mbsp_dur)
+ads_new_skim_clean <- ads_new_skim %>% filter((gndr_typ_cd == "F" | gndr_typ_cd== "M") & age<=100) %>% 
+  mutate(age_buck = ifelse(age<=20, "Upto 20", ifelse(age>20 & age<=40, "21-40", ifelse(age>40 & age<=60, "40-60", ">60"))))
+
+unique(ads_new_skim_clean$age_buck)
+# undersample
+library(splitstackshape)
+
+set.seed(1234)
+
+maj <- ads_new_skim_clean %>% filter(case_flag == "0")
+
+sample_ind <- sample(1:nrow(ads_new_skim_clean), 2000000)
+rus <- maj[sample_ind,]
+
+
+minority <- ads_new_skim_clean %>% filter(case_flag == "1")
+
+rus_ads <- rbind(minority,rus)
+
+
+## running the model after rebalancing trial--------
+
+set.seed(1234)
+train_rus_ind <- sample(1:nrow(rus_ads),0.9*nrow(rus_ads))
+
+train_rus <- rus_ads[train_rus_ind,]
+test_rus <- rus_ads[-train_rus_ind,]
+
+train.h2o.rus <- as.h2o(train_rus)
+test.h2o.rus <- as.h2o(test_rus)
+
+rm(ads_new)
+x.indep <- c(1:6,8:17,19)
+y.dep <- 7
+
+model_rf3 <- h2o.randomForest(y=y.dep, x=x.indep, training_frame = train.h2o.rus, ntrees = 100, mtries = 3, max_depth = 5, seed = 1234)
+
+predict.rforest3 <- as.data.frame(h2o.predict(model_rf3, test.h2o.rus))
+new_test3 <- cbind(test_rus,predict.rforest3)
+new_test3 <- new_test3 %>% mutate(flagging = ifelse(case_flag == "1" & predict=="1", "TP",ifelse(case_flag == "0" & predict=="0","TN",ifelse(case_flag == "0" & predict=="1","FP","FN"))))
+checking3 <- new_test3 %>% group_by(flagging) %>% summarise(counts = n())
+
+
+h2o.performance(model_rf3)
+plot(h2o.performance(model_rf3),valid=T, type='roc')
+ h2o.varimp(model_rf2)
+
+save.image("~/temp_20190516.RData")
+
+
+
+## continuing ----
+
+load("~/temp_20190516.RData")
+
+
+
+## trying only for delays ---
+
+
+str(ads_new_skim$cxn_ct)
+ads_new_dly <- ads_new_skim %>% filter(cxn_ct==0)
+
+
+chk <- ads_new_dly %>% filter(is.na(dprt_dly))
+
+
+ads_new_dly$cxn_ct <- NULL
+ads_new_dly$cxn_grp_cd <- NULL
+ads_new_dly$cxn_div_cd <- NULL
+ads_new_dly$cxn_fctr_cd <- NULL
+
+str(ads_new_dly)
+## replacing NAs
+
+ads_new_dly$arr_dly[is.na(ads_new_dly$arr_dly)] <- 0
+ads_new_dly$dprt_dly[is.na(ads_new_dly$dprt_dly)] <- 0
+ads_new_dly$blk_dly[is.na(ads_new_dly$blk_dly)] <- 0
+#ads_new_dly$tot_taxi[is.na(ads_new_dly$tot_taxi)] <- 0
+#ads_new_dly$flt_dvrn_ct[is.na(ads_new_dly$flt_dvrn_ct)] <- 0
+ads_new_dly$lftm_spnt_rev_usd_amt[is.na(ads_new_dly$lftm_spnt_rev_usd_amt)] <- 0
+ads_new_dly$lftm_crdd_fmi_ct[is.na(ads_new_dly$lftm_crdd_fmi_ct)] <- 0
+ads_new_dly$tot_mbsp_pgm_mi_ct[is.na(ads_new_dly$tot_mbsp_pgm_mi_ct)] <- 0
+ads_new_dly$mbsp_dur[is.na(ads_new_dly$mbsp_dur)] <- 0
+ads_new_dly$arr_dly[is.na(ads_new_dly$arr_dly)] <- 0
+
+
+#test and train ---
+
+set.seed(1234)
+train_dly_ind <- sample(1:nrow(ads_new_dly))
+
+
+
