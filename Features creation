@@ -1,0 +1,163 @@
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+ads <- fread("/data/IDS/ads_20190515.csv")
+
+getwd()
+
+str(ads$schd_dprt_gts)
+ads$schd_arr_gts <- as.POSIXct(ads$schd_arr_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+ads$actl_arr_gts <- as.POSIXct(ads$actl_arr_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+
+ads$schd_dprt_gts <- as.POSIXct(ads$schd_dprt_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+ads$actl_dprt_gts <- as.POSIXct(ads$actl_dprt_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+
+ads$schd_dprt_lts <- as.POSIXct(ads$schd_dprt_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+ads$cxn_lts <- as.POSIXct(ads$cxn_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+
+#ads$schd_dprt_lts <- as.POSIXct(ads$schd_dprt_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+#ads$cxn_lts <- as.POSIXct(ads$cxn_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+
+
+
+## bringing dprt lts back ----try later!!
+flt <- fread("/data/clean_files/DLY_CANX_LEG_STN_DT_Filters_clean.csv")
+
+level <- flt %>% distinct(flt_orig_dt,  ownr_crr_cd, flt_nb, schd_orig_stn_cd, schd_dest_stn_cd, schd_ac_typ_cd, actl_ac_typ_cd,schd_dprt_lts)
+ 
+level$flt_orig_dt <- as.Date(level$flt_orig_dt, format = "%Y-%m-%d")
+ads <- left_join(ads, level, by = c("ownr_crr_cd", "flt_orig_dt", "flt_nb", "schd_orig_stn_cd", "schd_dest_stn_cd"))
+str(ads$flt_orig_dt)
+
+
+## ----- CREATING DELAY VARIABLES -----#
+
+ads <- ads %>%  mutate(arr_dly = as.numeric( difftime(actl_arr_gts,schd_arr_gts,units = 'mins')))
+ads <- ads %>%  mutate(dprt_dly = as.numeric( difftime(actl_dprt_gts,schd_dprt_gts,units = 'mins')))
+
+sam <- ads[1:5, c("actl_dprt_gts","schd_dprt_gts","dprt_dly")]
+
+
+
+flt$schd_dprt_lts <- as.POSIXct(flt$schd_dprt_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+flt$cxn_lts <- as.POSIXct(flt$cxn_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+
+
+
+check <- ads %>% distinct (pnr_recloc, madeup_cust_id)
+check2 <- ads %>% distinct (pnr_recloc, madeup_cust_id, pnr_create_dt)
+
+filt <- check %>% filter(is.na(madeup_cust_id))
+rm(check,check2,filt)
+fwrite(ads,"/data/IDS/ads_20190515.csv",row.names = F)
+
+
+
+
+## creating other features --
+
+## create column for taxi deltas and blok time delta
+
+ads <- ads %>% mutate(blk_dly = (actl_blk_tm_mnt_ct) - (schd_blk_tm_mnt_ct), 
+                      tot_taxi = actl_taxi_in_mnt_ct+actl_taxi_out_mnt_ct)
+
+getwd()
+name <- as.data.frame(names(ads))
+ads <- ads %>% mutate(perc_occu = enp_pax_ct/pax_ct)
+ads <- ads %>% mutate(case_flag  = ifelse(sfdc_case_id == "", 0, 1))
+
+ads <- ads %>% mutate(new_gend = if_else((gndr_cd=="Unknown" & gndr_typ_cd!=""),gndr_typ_cd,
+                                         if_else((gndr_cd=="" & gndr_typ_cd!=""),gndr_typ_cd,gndr_cd,"NA")))
+
+# membership duration --
+
+str(ads$sm_orgl_enr_dt)
+ads$sm_orgl_enr_dt <-  as.Date(ads$sm_orgl_enr_dt, format = "%m/%d/%y")
+
+ads <- ads %>% mutate(mbsp_dur = round( (Sys.Date() - sm_orgl_enr_dt )/12, digits = 0))
+ads$mbsp_dur[is.na(ads$mbsp_dur)] <- 0
+
+Sys.Date()
+
+test <- as.data.frame(ads[1:5, c("sm_orgl_enr_dt")])
+
+test$diff = round((Sys.Date() - test$`ads[1:5, c("sm_orgl_enr_dt")]`)/12,digits = 0)
+
+
+# % occupancy - 
+
+# selecting relevant columns --
+
+ads_filt <- ads_filt %>% select(arr_dly, dprt_dly, dly_div_cd, dly_fctr_cd, blk_dly, tot_taxi,
+                           case_flag, cxn_ct, cxn_grp_cd, cxn_div_cd, cxn_fctr_cd,
+                           flt_dvrn_ct, lftm_spnt_rev_usd_amt, lftm_crdd_fmi_ct,
+                           tot_mbsp_pgm_mi_ct, mbsp_dur)
+
+unique(ads_filt$case_flag)
+
+
+
+fwrite(ads, "/data/IDS/ads_20190516.csv", row.names = F)
+
+
+str(ads_filt)
+ads_filt$case_flag <- as.factor(ads_filt$case_flag)
+unique(ads_filt$case_flag)
+fwrite(ads_filt, "/data/IDS/skele.csv", row.names = F)
+
+
+# ---------------------------------------------------------------------------------#
+
+
+
+## First model
+
+library(randomForest)
+ads_filt <- fread ("/data/IDS/skele.csv")
+ads_filt <- ads_filt %>% mutate_if(is.character,as.factor)
+
+
+rf_mod <- randomForest(case_flag ~., data = ads_filt,importance = T, ntree = 25, keep.forest = T, replace = T,na.action = na.exclude)
+unique(ads_filt$case_flag)
+
+
+## different package --
+
+library(rpart)
+
+model_dt <- rpart(case_flag~., data = ads_filt)
+
+
+
+## splitting into train and test ---
+
+set.seed(1234)
+train_indices <- sample(1:nrow(ads_filt), 0.8*nrow(ads_filt))
+
+ads_train <- ads[train_indices,]
+ads_test <- ads[-train_indices,]
+
+
+
+plot.rpart(model_dt)
+library(rpart)
+library(rpart.plot)
+rpart.plot(model_dt)
+path.rpart(model_dt)
+model_dt$splits
+model_dt$variable.importance
+
+
+
+##checking loyalty occurance--
+
+
+
+str(ads_filt)
+check <- ads_filt %>% filter(is.na(lftm_spnt_rev_usd_amt))
+rm(check)
+
+
+rm(ads_filt)
+
