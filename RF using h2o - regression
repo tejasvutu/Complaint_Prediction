@@ -1,0 +1,114 @@
+## Random Forest using H2O
+
+
+## Features---
+ads <- leg_level
+rm(leg_level)
+name <- as.data.frame(names(ads))
+str(ads$flt_orig_dt)
+
+flt2 <- flt %>% select(flt_orig_dt,flt_nb, schd_orig_stn_cd,schd_dest_stn_cd,ownr_crr_cd,actl_orig_stn_cd,actl_dest_stn_cd,actl_dprt_gts)
+
+ads_2 <- inner_join(ads,flt2, by =c("flt_orig_dt","flt_nb", "schd_orig_stn_cd","schd_dest_stn_cd","ownr_crr_cd","actl_orig_stn_cd","actl_dest_stn_cd") )
+head(ads$schd_dprt_lts)
+
+ads <- ads_2
+rm(ads_2)
+str(ads$schd_dprt_gts)
+ads$schd_arr_gts <- as.POSIXct(ads$schd_arr_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+ads$actl_arr_gts <- as.POSIXct(ads$actl_arr_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+
+ads$schd_dprt_gts <- as.POSIXct(ads$schd_dprt_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+ads$actl_dprt_gts <- as.POSIXct(ads$actl_dprt_gts, format = "%Y-%m-%d %H:%M",tz = "GMT")
+
+ads$schd_dprt_lts <- as.POSIXct(ads$schd_dprt_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+ads$cxn_lts <- as.POSIXct(ads$cxn_lts, format = "%m/%d/%y %I:%M %p",tz = "GMT")
+
+str(ads$schd_dprt_lts)
+
+
+ads <- ads %>% mutate(blk_dly = (actl_blk_tm_mnt_ct) - (schd_blk_tm_mnt_ct), 
+                      tot_taxi = actl_taxi_in_mnt_ct+actl_taxi_out_mnt_ct)
+ads <- ads %>% mutate(perc_occu = enp_pax_ct/pax_ct)
+
+ads <- ads %>% mutate(ac_change = ifelse(schd_ac_typ_cd == actl_ac_typ_cd, 0 ,1))
+
+-
+
+rm(zzz)
+
+
+ads4 <- ads2 %>% filter(is.na(cxn_lts))
+ads3 <- ads2 %>% filter(is.na(actl_taxi_in_mnt_ct))
+check <- ads2 %>% filter(is.na(actl_taxi_in_mnt_ct)==F & is.na(actl_taxi_out_mnt_ct)==F &
+                           is.na(schd_blk_tm_mnt_ct)==F & is.na(actl_blk_tm_mnt_ct)==F)
+unique(is.na(check$perc_occu))
+
+a <- check %>% filter(is.na(perc_occu))
+unique(check$dly_typ_cd)
+
+
+check$dly_div_cd[check$dly_div_cd==""]<-"Unknown"
+check$dly_fctr_cd[check$dly_fctr_cd==""]<- "Unknown"
+check$dly_typ_cd[check$dly_typ_cd==""]<- "Unknown"
+
+
+fwrite(check,"/data/IDS/leg_level_dly_20190522.csv")
+save.image("~/temp_20190522.RData")
+
+library(h2o)
+h2o.init()
+
+
+name <- as.data.frame(names(check))
+
+
+rm(list = setdiff(ls(),"check"))
+
+check <- check %>% mutate_if(is.character,as.factor)
+str(check)
+
+ads_temp <- check %>% select(ml_dc_cd,
+                             ownr_crr_cd,
+                             ac_change,
+                             dom_intl_cd,
+                             dly_div_cd,
+                             dly_typ_cd,
+                             dly_fctr_cd,
+                             dot_mlg_ct,
+                             actl_enrt_mnt_ct,
+                             arr_dly,
+                             dprt_dly,
+                             blk_dly,
+                             tot_taxi,
+                             perc_occu,
+                             tot_loy, tot_comps)
+
+
+x.indep <- c(1:15)
+y.dep <- 16
+
+
+set.seed(1234)
+train_ind <- sample(1:nrow(ads_temp), 0.9*nrow(ads_temp))
+train <- ads_temp[train_ind,]
+test <- ads_temp[-train_ind,]
+
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+h2o.varimp(model_rf3)
+h2o.r2(model_rf3, train = FALSE, valid = FALSE, xval = FALSE)
+
+name <- as.data.frame(names(ads_temp))
+
+model_rf3 <- h2o.randomForest(y=y.dep, x=x.indep, training_frame = train.h2o, ntrees = 25, mtries = 3, max_depth = 5, seed = 1234)
+predict.rforest3 <- as.data.frame(h2o.predict(model_rf3, test.h2o))
+new_test3 <- cbind(test,predict.rforest3)
+h2o.performance(model_rf3)
+
+
+
+
+save.image("~/Regression_20190522.RData")
