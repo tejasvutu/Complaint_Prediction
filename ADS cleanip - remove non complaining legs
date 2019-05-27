@@ -1,0 +1,163 @@
+## PNR Data --
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+pnr <- fread("~/Pnr_cons.csv")
+flt <- fread("/data/clean_files/DLY_CANX_LEG_STN_DT_Filters_clean.csv")
+c2p <- fread("/data/clean_files/casetopnr_cleaned.csv")
+
+
+pnr <- pnr %>% select (pnr_recloc,pnr_create_dt,flt_orig_dt,upgrade_cd,downgrade_ind,schd_orig_stn_cd,schd_dest_stn_cd,
+                       flt_nb,given_name_nbr,surname_nbr,seat_assignment,ownr_crr_cd,cur_seat_status_cd ,cbn_cd,itin_seg_nbr,
+                       first_leg_dep_dt)
+getwd()
+
+sam <- head(flt)
+
+flt_skim <- flt %>% select(flt_orig_dt, ml_dc_cd, ownr_crr_cd, flt_nb, schd_orig_stn_cd, schd_dest_stn_cd, 
+                           schd_ac_typ_cd, actl_ac_typ_cd, actl_orig_stn_cd, actl_dest_stn_cd)
+level <- distinct(flt_skim)
+rm(level)
+
+
+#Joining PNR with leg data
+pnr$flt_orig_dt<- as.Date(pnr$flt_orig_dt, format = "%Y-%m-%d")
+flt_skim$flt_orig_dt <- as.Date(flt_skim$flt_orig_dt, format = "%Y-%m-%d")
+
+pnr_flt <- left_join(pnr, flt_skim, by = c("ownr_crr_cd", "flt_orig_dt", "flt_nb", "schd_orig_stn_cd", "schd_dest_stn_cd") )
+getwd()
+
+#checking for common columns in the two --- can be ignored
+name <- as.data.frame(as.character( names(flt_skim)))
+name2 <- as.data.frame(as.character(names(pnr)))
+str(name2)
+
+name$colnames <- as.character(name$colnames)
+name2$colnames <- as.character(name2$colnames)
+names(name) <- "colnames"
+
+check <- inner_join(name,name2, by = "colnames")
+# continue from below ---
+
+rm(flt,flt_skim, pnr)
+
+str(c2p)
+names(c2p) <- c("sfdc_case_id","pnr_recloc")
+
+
+## joining case 
+pnr_flt_c2p <- left_join(pnr_flt, c2p, by = "pnr_recloc")
+
+
+
+complaints <- fread("/data/clean_files/Clean_complaint.csv")
+complaints$V1 <- NULL
+
+names(complaints) <- gsub(" ","_", tolower(names(complaints)))
+
+
+complaints2 <- complaints %>% select(sfdc_case_id, case_nb, case_fdbk_nm)
+rm(complaints)
+
+
+rm(pnr_flt)
+rm(c2p)
+
+final_check <- left_join(pnr_flt_c2p, complaints2, by = "sfdc_case_id")
+getwd()
+rm(pnr_flt_c2p)
+
+rm(complaints2)
+
+## adding loyalty---
+
+loy <- fread("/data/IDS/loyalty_final.csv")
+p2muc <- fread("/data/IDS/p2muc_cons.csv")
+ 
+str(p2muc$pnr_create_dt)
+
+final_check$pnr_create_dt<- as.Date(final_check$pnr_create_dt, format = "%Y-%m-%d")
+p2muc$pnr_create_dt <- as.Date(p2muc$pnr_create_dt, format = "%m/%d/%y")
+
+str(p2muc$pnr_create_dt)
+
+
+
+
+final_check_p2muc <- left_join (final_check, p2muc, by = c("pnr_recloc", "pnr_create_dt", "surname_nbr", "given_name_nbr"))
+
+check_dem <- left_join(final_check_p2muc, loy, by = "madeup_cust_id")
+
+summary(check_dem$gndr_typ_cd)
+
+## checking legs which have no complaints raised
+
+sam$new <- NA
+
+n_distinct(sam$new)
+
+head(final_check$sfdc_case_id)
+checking <- final_check %>% filter(is.na(sfdc_case_id))
+getwd()
+
+colSums(checking$sfdc_case_id)
+str(final_check)
+zzz <- setDT(final_check)[, lapply(.SD, function(x) sum(!is.na(x))), by = c(ownr_crr_cd,flt_orig_dt, flt_nb,
+                                                                              schd_orig_stn_cd,schd_dest_stn_cd)]
+
+
+#zzz <- final_check %>% 
+#  group_by(ownr_crr_cd,flt_orig_dt, flt_nb,
+#           schd_orig_stn_cd,schd_dest_stn_cd) %>%  summarise_each(funs(sum(!is.na(.))))
+
+zzz <- final_check %>% group_by(ownr_crr_cd,flt_orig_dt, flt_nb,schd_orig_stn_cd,schd_dest_stn_cd,actl_orig_stn_cd, actl_dest_stn_cd) %>% 
+  summarise(non_na_count = sum(!is.na(sfdc_case_id)))
+
+
+non_complain_leg <- zzz[which(zzz$non_na_count==0),]
+
+rm(checking)
+cleaned_up_ads <- anti_join(final_check, non_complain_leg, by = c("ownr_crr_cd","flt_orig_dt","flt_nb",
+                                                                  "schd_orig_stn_cd","schd_dest_stn_cd"))
+getwd()
+
+
+rm(cleaned_up_ads)
+## QCing:
+
+boom <- inner_join(final_check, non_complain_leg, by = c("ownr_crr_cd","flt_orig_dt","flt_nb",
+                                                         "schd_orig_stn_cd","schd_dest_stn_cd"))
+
+unique(boom$sfdc_case_id)
+rm(boom)
+
+rm(final_check)
+
+
+fwrite(cleaned_up_ads,"/data/IDS/reduced_ads_20190515.csv",row.names = F)
+
+
+rm(list = setdiff(ls(),"non_complain_leg"))
+ads <- fread("/data/IDS/ads_final.csv")
+
+str(ads$flt_orig_dt)
+ads$flt_orig_dt <- as.Date(ads$flt_orig_dt, format = "%Y-%m-%d")
+
+ads_cleaned_up <- anti_join(ads, non_complain_leg, by = c("ownr_crr_cd","flt_orig_dt","flt_nb",
+                                                           "schd_orig_stn_cd","schd_dest_stn_cd"))
+
+
+
+getwd()
+
+fwrite(ads_cleaned_up, "/data/IDS/ads_full_size_reduced.csv", row.names = F)
+rm(ads)
+
+
+str(ads_cleaned_up$schd_arr_gts)
+
+
+
+table(final)
