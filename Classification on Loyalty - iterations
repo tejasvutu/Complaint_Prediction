@@ -211,7 +211,7 @@ model_rf4 <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, 
 imp_var4 <- h2o.varimp(model_rf4)
 h2o.performance(model_rf4)
 
-
+## cool
 
 predict.rforest4 <- as.data.frame(h2o.predict(model_rf4, test.h2o))
 new_test4 <- cbind(test,predict.rforest4)
