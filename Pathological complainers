@@ -25,27 +25,24 @@ temp <- temp %>% mutate(case_flag = ifelse(sfdc_case_id == "", 0 , 1))
 
 
 
-count_flt <- temp %>% group_by (madeup_cust_id) %>% 
-  summarise(flts = n_distinct(ownr_crr_cd, flt_orig_dt, flt_nb, schd_dest_stn_cd, schd_orig_stn_cd))
-
 zzz <- temp %>% distinct(madeup_cust_id, ownr_crr_cd, flt_orig_dt, flt_nb, schd_dest_stn_cd, schd_orig_stn_cd)
 check <- zzz %>% group_by(madeup_cust_id) %>% summarise(flts = n())
 
 
 temp_compl <- temp %>% distinct(madeup_cust_id, sfdc_case_id)
 compl <- temp_compl %>% group_by(madeup_cust_id) %>% 
-  summarise(complaints =)
+  summarise(complaints = n())
 
-
+summary(compl$complaints)
 zzz2 <- inner_join(compl, check, by = "madeup_cust_id")
 
 
-max(zzz2$compl)
-zzz2$compl_per_flt <- zzz2$compl/zzz2$flts
+max(zzz2$complaints)
+zzz2$compl_per_flt <- zzz2$complaints/zzz2$flts
 
 summary(zzz2$compl_per_flt)
 
-check2 <- zzz2 %>% filter(compl == 211)
+check2 <- zzz2 %>% filter(complaints == 36)
 check3 <- zzz2 %>% filter(compl_per_flt >50)
 
 
@@ -56,8 +53,6 @@ lol <- ads %>% filter(madeup_cust_id == 2702826)
 summary(zzz2$flts)
 corr(zzz2$flts, zzz2$compl)
 cor(zzz2$flts, zzz2$compl, method = "pearson")
-
-
 
 
 
