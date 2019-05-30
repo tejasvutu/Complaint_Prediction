@@ -1,0 +1,63 @@
+library(data.table)
+library(dplyr)
+
+ads <- fread("~/Datasets/remove_noncomp_cleaned_up_ads_20190523.csv")
+
+str(ads$madeup_cust_id)
+
+name <- as.data.frame(names(ads))
+
+temp <- ads %>% select (  sfdc_case_id, pnr_recloc,pnr_create_dt,flt_orig_dt, schd_orig_stn_cd,schd_dest_stn_cd,
+                          flt_nb, madeup_cust_id, ml_dc_cd, ownr_crr_cd, sm_orgl_enr_dt) %>% 
+  filter(is.na(madeup_cust_id) == F & sm_orgl_enr_dt != "") 
+
+
+
+
+str(temp$sfdc_case_id)
+str(temp$madeup_cust_id)
+
+
+temp <- temp %>% mutate(case_flag = ifelse(sfdc_case_id == "", 0 , 1))
+
+#temp <- tepm
+#rm(tepm)
+
+
+
+count_flt <- temp %>% group_by (madeup_cust_id) %>% 
+  summarise(flts = n_distinct(ownr_crr_cd, flt_orig_dt, flt_nb, schd_dest_stn_cd, schd_orig_stn_cd))
+
+zzz <- temp %>% distinct(madeup_cust_id, ownr_crr_cd, flt_orig_dt, flt_nb, schd_dest_stn_cd, schd_orig_stn_cd)
+check <- zzz %>% group_by(madeup_cust_id) %>% summarise(flts = n())
+
+
+temp_compl <- temp %>% distinct(madeup_cust_id, sfdc_case_id)
+compl <- temp_compl %>% group_by(madeup_cust_id) %>% 
+  summarise(complaints =)
+
+
+zzz2 <- inner_join(compl, check, by = "madeup_cust_id")
+
+
+max(zzz2$compl)
+zzz2$compl_per_flt <- zzz2$compl/zzz2$flts
+
+summary(zzz2$compl_per_flt)
+
+check2 <- zzz2 %>% filter(compl == 211)
+check3 <- zzz2 %>% filter(compl_per_flt >50)
+
+
+
+lol <- ads %>% filter(madeup_cust_id == 2702826)
+
+
+summary(zzz2$flts)
+corr(zzz2$flts, zzz2$compl)
+cor(zzz2$flts, zzz2$compl, method = "pearson")
+
+
+
+
+
