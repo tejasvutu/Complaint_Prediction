@@ -1,0 +1,75 @@
+library(data.table)
+library(dplyr)
+
+ads <- fread("/data/IDS/ads5_20190523.csv")
+
+getwd()
+## rebalancling the overall ADS
+
+
+maj_class <- ads %>% filter (case_flag == 0)
+rownames(maj_class) <- 1:nrow(maj_class)
+set.seed(1234)
+sampl_ind <- sample(1:nrow(maj_class), 0.5*nrow(maj_class))
+maj_class_rus <- maj_class[sampl_ind,]
+min_class <- ads %>% filter(case_flag ==1)
+new_ads_rebal <- rbind(min_class, maj_class_rus)
+
+## shuffling the data set <- <- ----
+new_ads_rebal <- new_ads_rebal[sample(nrow(new_ads_rebal)),]
+rownames(new_ads_rebal) <- 1:nrow(new_ads_rebal)
+
+fwrite(new_ads_rebal, "~/pre_rebalanced_ads_20190528.csv",row.names = F)
+
+
+## trying on this <- <-  without H2O rebalancing
+
+
+ads_feed <- new_ads_rebal %>% select(ownr_crr_cd,	cur_seat_status_cd,	dom_intl_cd,	dly_typ_cd,	dly_fctr_cd,	ml_dc_cd,	dot_mlg_ct,	
+                            actl_enrt_mnt_ct,	gndr_typ_cd,	mbp_avbl_mi_ct,	mbsp_dur,	perc_occu,	arr_dly,	dprt_dly,	blk_dly,
+                            tot_taxi,	age,	upgrade_cd,	downgrade_ind,	cbn_cd,	flt_dvrn_ct,	pax_ct,	mbsp_pgm_tier_cd,case_flag)
+
+rm(list = setdiff(ls(),"ads_feed"))
+ads_feed <- ads_feed %>% mutate_if(is.character,as.factor)
+ads_feed$case_flag <- as.factor(ads_feed$case_flag)
+
+prop.table(table(ads_feed$case_flag))
+
+set.seed(1234)
+train_ind <- sample(1:nrow(ads_feed), 0.9*nrow(ads_feed))
+train <- ads_feed[train_ind,]
+test <- ads_feed[-train_ind,]
+
+prop.table(table(train$case_flag))
+prop.table(table(test$case_flag)) ## proportion is maintained at 10%
+
+
+
+str(ads_feed)
+
+
+library(h2o)
+h2o.init()
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+
+
+x.indep <- c(1:23)
+y.indep <- 24
+
+
+
+model_rf <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, 
+                             ntrees = 50, mtries = 5, max_depth = 6, seed = 1234)
+
+
+imp_var <- h2o.varimp(model_rf)
+h2o.performance(model_rf)
+
+
+predict.rforest <- as.data.frame(h2o.predict(model_rf, test.h2o))
+new_test <- cbind(test,predict.rforest)
+new_test <- new_test %>% mutate(flagging = ifelse(case_flag == 1 & predict==1, "TP",ifelse(case_flag == 0 & predict==0,"TN",ifelse(case_flag == 0 & predict==1,"FP","FN"))))
+checking <- new_test %>% group_by(flagging) %>% summarise(counts = n())
