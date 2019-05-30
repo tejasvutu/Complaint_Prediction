@@ -1,0 +1,140 @@
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+ads <- fread("/data/IDS/ads5_20190523.csv")
+
+ads <- ads %>% mutate_if(is.character,as.factor)
+
+ads$case_flag <- as.factor(ads$case_flag)
+
+prop.table(table(ads$gndr_typ_cd))
+
+
+ads_feed <- ads %>% select(ownr_crr_cd,	cur_seat_status_cd,	dom_intl_cd,	dly_typ_cd,	dly_fctr_cd,	ml_dc_cd,	dot_mlg_ct,	
+                           actl_enrt_mnt_ct,	gndr_typ_cd,	mbp_avbl_mi_ct,	mbsp_dur,	perc_occu,	arr_dly,	dprt_dly,	blk_dly,
+                           tot_taxi,	age,	upgrade_cd,	downgrade_ind,	cbn_cd,	flt_dvrn_ct,	pax_ct,	mbsp_pgm_tier_cd,case_flag)
+
+prop.table(table(ads_feed$gndr_typ_cd))
+
+ads_feed <- ads_feed %>% mutate(age_buck = ifelse(age<=30, "Upto 30", ifelse(age <=45, "31 to 45", ifelse(age<= 60 , "46 to 60", ">60"))))
+
+#check <- ads_feed %>% filter(age >30 & age <= 45)
+#unique(check$age_buck)
+#rm(check)
+
+
+
+ads_feed <- ads_feed %>% mutate(dprt_dly_flag = ifelse(dprt_dly<=0, "No Delay", ifelse(dprt_dly>0 & dprt_dly<=30, "0-30min",
+                                                                                       ifelse(dprt_dly>30 & dprt_dly<=120, "31min-2hr",
+                                                                                              ifelse(dprt_dly>120 & dprt_dly<=300,"2-5hr",">5hr")))))
+
+ads_feed <- ads_feed %>% mutate(arr_dly_flag = ifelse(arr_dly<=0, "No Delay", ifelse(arr_dly>0 & arr_dly<=30, "0-30min",
+                                                                                     ifelse(arr_dly>30 & arr_dly<=120, "31min-2hr",
+                                                                                            ifelse(arr_dly>120 & arr_dly<=300,"2-5hr",">5hr")))))
+
+
+
+library(splitstackshape)
+
+maj <- ads_feed %>% filter(case_flag == 0)
+prop.table(table(maj$dprt_dly_flag)) 
+## majority class distributions along the strata doesnt vary too much from the overall ADS
+## explainable by the skew in the ratio of the classes
+
+set.seed(1234)
+maj_strat <- stratified(maj, c("gndr_typ_cd","dprt_dly_flag","arr_dly_flag", "age_buck")  , 1600000/nrow(maj))
+
+str(ads_feed$case_flag)
+min <- ads_feed %>% filter(case_flag == 1)
+
+
+new_bal_ads <- rbind(min, maj_strat)
+## shuffling ----
+new_bal_ads <- new_bal_ads[sample(nrow(new_bal_ads)),]
+rownames(new_bal_ads) <- 1:nrow(new_bal_ads)
+
+prop.table(table(new_bal_ads$dprt_dly_flag))
+
+new_bal_ads <- new_bal_ads %>% mutate_if(is.character,as.factor)
+
+str(new_bal_ads)
+
+
+
+
+
+
+## trying train and test ----
+
+set.seed(1234)
+
+train_ind <- sample(1:nrow(new_bal_ads), 0.9*nrow(new_bal_ads))
+
+train <- new_bal_ads[train_ind,]
+test <- new_bal_ads[-train_ind,]
+
+library(h2o)
+h2o.init()
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+
+
+x.indep <- c(1:12,15,16,18:23,25:27)
+y.indep <- 24
+
+
+
+
+
+
+
+
+model_rf <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, 
+                             ntrees = 50, mtries = 5, max_depth = 6, seed = 1234)
+imp_var <- h2o.varimp(model_rf)
+h2o.performance(model_rf)
+
+
+
+prop.table(table(train$case_flag))
+
+
+
+
+## bringing in odd/normal and problem vs non problem ----
+
+str(ads)
+
+ads$schd_arr_lts <- as.character(ads$schd_arr_lts)
+ads$actl_arr_lts <- as.character(ads$actl_arr_lts)
+ads$schd_dprt_lts <- as.character(ads$schd_dprt_lts)
+ads$actl_dprt_lts <- as.character(ads$actl_dprt_lts)
+
+
+str(ads$schd_arr_lts)
+str(ads$actl_arr_lts)
+str(ads$schd_dprt_lts)
+str(ads$actl_dprt_lts)
+
+ads$schd_dprt_lts <- gsub("T"," ",ads$schd_dprt_lts)
+ads$schd_dprt_lts <- gsub("Z","",ads$schd_dprt_lts)
+
+ads$schd_arr_lts <- as.POSIXct(ads$schd_arr_lts, format = "%Y-%m-%d %H:%M")
+ads$actl_arr_lts <- as.POSIXct(ads$actl_arr_lts, format = "%Y-%m-%d %H:%M")
+ads$schd_dprt_lts <- as.POSIXct(ads$schd_dprt_lts, format = "%Y-%m-%d %H:%M")
+ads$actl_dprt_lts <- as.POSIXct(ads$actl_dprt_lts, format = "%m/%d/%y %I:%M %p")
+
+
+
+ads<-ads %>% mutate(time_bucket = if_else(hour(schd_dprt_lts)<6 | hour(schd_arr_lts)<6 |
+                                            hour(actl_dprt_lts)<6 | hour(actl_arr_lts)<6,"Odd Hours", "Normal Hours"))
+
+
+
+ads_feed_new <- ads %>% select(ownr_crr_cd,	cur_seat_status_cd,	dom_intl_cd,	dly_typ_cd,	dly_fctr_cd,	ml_dc_cd,	dot_mlg_ct,	
+                           actl_enrt_mnt_ct,	gndr_typ_cd,	mbp_avbl_mi_ct,	mbsp_dur,	perc_occu,	arr_dly,	dprt_dly,	blk_dly,
+                           tot_taxi,	age,	upgrade_cd,	downgrade_ind,	cbn_cd,	flt_dvrn_ct,	pax_ct,	mbsp_pgm_tier_cd,case_flag,
+                           time_bucket) 
