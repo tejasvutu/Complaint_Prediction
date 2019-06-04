@@ -1,0 +1,250 @@
+## recreate iteration 6 ----
+
+
+ads_feed2 <- ads_feed2 %>% mutate_if(is.character, as.factor)
+str(ads_feed2)
+
+ads_feed2 <- ads_feed2 %>% mutate(age_buck = ifelse(age<=30, "Upto 30", ifelse(age <=45, "31 to 45", ifelse(age<= 60 , "46 to 60", ">60"))))
+
+rm(list = setdiff(ls(), "ads_feed2"))
+
+maj <- ads_feed2 %>% filter(case_flag == 0)
+min <- ads_feed2 %>% filter(case_flag == 1)
+
+library(splitstackshape)
+set.seed(1234)
+maj_strat <- stratified(maj, c("gndr_typ_cd","dprt_dly_flag","arr_dly_flag", "age_buck")  , 2000000/nrow(maj))
+
+temp <- rbind(maj_strat, min,min)
+
+prop.table(table(temp$case_flag))
+
+name <- as.data.frame(names(temp))
+
+temp <- temp[sample(nrow(temp)),]
+rownames(temp) <- 1:nrow(temp)
+
+## RF using H2O ----
+
+set.seed(1234)
+
+train_ind <- sample(1:nrow(temp), 0.9*nrow(temp))
+
+train <- temp[train_ind,]
+test <- temp[-train_ind,]
+
+library(h2o)
+h2o.init()
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+
+
+x.indep <- c(1:12,15,16,18:23,25:27)
+y.indep <- 24
+
+model_rf <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, 
+                             ntrees = 50, mtries = 5, max_depth = 6, seed = 1234)
+imp_var <- h2o.varimp(model_rf)
+h2o.performance(model_rf)
+
+predict.rforest <- as.data.frame(h2o.predict(model_rf, test.h2o))
+new_test <- cbind(test,predict.rforest)
+
+qc <- predict.rforest %>% filter(predict == 0) %>% summarise(zzz = max(p0), zzz2 = min(p0))
+
+
+test_performance <- new_test %>% select (case_flag, predict) %>% 
+  mutate(correct = ifelse(case_flag == predict, "correct", "wrong"))
+
+
+## some basic manipulations to get the data as per the article----
+test_h2o_df = as.data.frame(test.h2o)
+
+test_h2o_2 = test_h2o_df %>%
+  as.data.frame() %>% 
+  mutate(sample_id = rownames(test_h2o_df ))
+
+
+test_correct <- test_performance %>% 
+  mutate(sample_id = rownames(test_performance)) %>% 
+  filter(correct == 'correct') %>%
+  inner_join(test_h2o_2) %>% 
+  select(-c(predict, correct, sample_id))
+
+
+test_wrong <- test_performance %>% 
+  mutate(sample_id = rownames(test_performance)) %>% 
+  filter(correct == 'wrong') %>%
+  inner_join(test_h2o_2) %>% 
+  select(-c(predict, correct, sample_id))
+
+
+## setting up lime ----
+
+library(lime)
+
+# Setup lime::model_type() function for h2o
+model_type.H2OBinomialModel <- function(x, ...) {
+  return("classification")
+}
+
+
+predict_model.H2OBinomialModel <- function(x, newdata, type, ...) {
+  pred <- h2o.predict(x, as.h2o(newdata))
+  # return probs
+  return(as.data.frame(pred[,-1]))
+}
+
+
+predict_model(x = model_rf, newdata = as.data.frame(test.h2o[,-24]), type = 'raw') %>%
+  tibble::as_tibble()
+
+
+explainer <- lime::lime(  as.data.frame(train.h2o[, -24]),   model = model_rf,  bin_continuous = FALSE)
+
+#str(as.data.frame(train.h2o[,-24]))
+
+explanation_corr <- explain(
+  test_correct[1:12, -1],
+  explainer = explainer,
+  n_labels = 1,
+  n_features = 5,
+  kernel_width = 0.5)
+
+plot_features(explanation_corr, ncol = 3)
+
+
+explanation_mis <- explain(
+  test_wrong[1:12, -1],
+  explainer = explainer,
+  labels = "p1",
+  n_features = 5,
+  kernel_width = 0.5)
+
+plot_features(explanation_mis, ncol = 3)
+
+
+
+
+## ultra balancing trial ----
+
+maj_strat <- stratified(maj, c("gndr_typ_cd","dprt_dly_flag","arr_dly_flag", "age_buck", "dom_intl_cd","ownr_crr_cd","ml_dc_cd"),
+                        1200000/nrow(maj))
+temp <- rbind(maj_strat, min,min,min)
+
+prop.table(table(temp$case_flag))
+temp <- temp[sample(nrow(temp)),]
+rownames(temp) <- 1:nrow(temp)
+
+
+temp$age_buck <- as.factor(temp$age_buck)
+
+
+## RF using H2O trial 2----
+
+set.seed(1234)
+
+train_ind <- sample(1:nrow(temp), 0.9*nrow(temp))
+
+train <- temp[train_ind,]
+test <- temp[-train_ind,]
+str(train)
+library(h2o)
+h2o.init()
+
+train.h2o <- as.h2o(train)
+test.h2o <- as.h2o(test)
+
+
+
+x.indep <- c(1:12,15,16,18:23,25:27)
+y.indep <- 24
+
+model_rf <- h2o.randomForest(y=y.indep, x=x.indep, training_frame = train.h2o, 
+                             ntrees = 50, mtries = 5, max_depth = 6, seed = 1234)
+imp_var <- h2o.varimp(model_rf)
+h2o.performance(model_rf)
+
+predict.rforest <- as.data.frame(h2o.predict(model_rf, test.h2o))
+new_test <- cbind(test,predict.rforest)
+
+qc <- predict.rforest %>% filter(predict == 1) %>% summarise(zzz = max(p1), zzz2 = min(p1))
+
+
+test_performance <- new_test %>% select (case_flag, predict) %>% 
+  mutate(correct = ifelse(case_flag == predict, "correct", "wrong"))
+
+
+## some basic manipulations to get the data as per the article----
+test_h2o_df = as.data.frame(test.h2o)
+
+test_h2o_2 = test_h2o_df %>%
+  as.data.frame() %>% 
+  mutate(sample_id = rownames(test_h2o_df ))
+
+
+test_correct <- test_performance %>% 
+  mutate(sample_id = rownames(test_performance)) %>% 
+  filter(correct == 'correct') %>%
+  inner_join(test_h2o_2) %>% 
+  select(-c(predict, correct, sample_id))
+
+
+test_wrong <- test_performance %>% 
+  mutate(sample_id = rownames(test_performance)) %>% 
+  filter(correct == 'wrong') %>%
+  inner_join(test_h2o_2) %>% 
+  select(-c(predict, correct, sample_id))
+
+
+## setting up lime ----
+
+library(lime)
+
+# Setup lime::model_type() function for h2o
+model_type.H2OBinomialModel <- function(x, ...) {
+  return("classification")
+}
+
+
+predict_model.H2OBinomialModel <- function(x, newdata, type, ...) {
+  pred <- h2o.predict(x, as.h2o(newdata))
+  # return probs
+  return(as.data.frame(pred[,-1]))
+}
+
+
+predict_model(x = model_rf, newdata = as.data.frame(test.h2o[,-24]), type = 'raw') %>%
+  tibble::as_tibble()
+
+
+explainer <- lime::lime(  as.data.frame(train.h2o[, -24]),   model = model_rf,  bin_continuous = FALSE)
+
+#str(as.data.frame(train.h2o[,-24]))
+
+explanation_corr <- explain(
+  test_correct[1:12, -1],
+  explainer = explainer,
+  n_labels = 1,
+  n_features = 5,
+  kernel_width = 0.5)
+
+plot_features(explanation_corr, ncol = 3)
+
+
+explanation_mis <- explain(
+  test_wrong[1:12, -1],
+  explainer = explainer,
+  labels = "p1",
+  n_features = 5,
+  kernel_width = 0.5)
+
+plot_features(explanation_mis, ncol = 3)
+
+
+
+
+
+
