@@ -1,0 +1,303 @@
+## Conecting flights
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+
+## setup ----
+pnr <- fread("/data/IDS/pnr_cons_20190612.csv", verbose = T)
+flt <- fread("/data/clean_files/DLY_CANX_LEG_STN_DT_Filters_clean.csv")
+
+name_flt <- as.data.frame(names(flt))
+name_pnr <- as.data.frame(names(pnr))
+
+pnr$pnr_create_dt <- as.Date(pnr$pnr_create_dt, format = "%Y-%m-%d")
+pnr$flt_orig_dt <- as.Date(pnr$flt_orig_dt, format = "%Y-%m-%d")
+flt$flt_orig_dt <- as.Date(flt$flt_orig_dt, format = "%Y-%m-%d")
+
+
+solo <- pnr[which(pnr$grp_solo_flag =="Solo"), ] ## 22,990,186 records
+grp <- pnr[which(pnr$grp_solo_flag =="Group"), ] ## 16,725,295 records
+
+solo <- solo %>% distinct(pnr_create_dt, pnr_recloc) ## 16,224,202
+grp <- grp %>% distinct(pnr_create_dt, pnr_recloc)   ## 4,583,368
+
+
+str(pnr)
+str(flt)
+
+unique(flt$air_rtn_ct)
+
+flt %>% distinct(gt_rtn_ct,air_rtn_ct)
+
+
+
+flt_skim <- flt %>% select(3,4,    5,6, 7,8,    9,10,
+                           11,12,  13,14,15,16,  17,18,
+                           19,20,  21,26,27,28,  35,36,
+                           37,38,  39,40,41,  42,43,  44,
+                           45,  46,47,  48,49,  52)
+
+
+## finding kaand PNRs----
+unique(pnr$grp_solo_flag)
+
+temp <- pnr %>% distinct(pnr_recloc, pnr_create_dt, schd_dest_stn_cd, schd_orig_stn_cd, flt_orig_dt)
+temp <- setDT(temp)
+temp_counts <- temp[,.(counts = .N), by = c("pnr_recloc", "pnr_create_dt")]
+
+
+## separating the single leg people -- contain both grps and solo PNRs----
+sing <- temp_counts[which(temp_counts$counts ==1),]
+head(sing)
+check <- pnr[which(pnr$pnr_recloc == "JQXC8A"),]
+
+
+sing2 <- sing %>% distinct(pnr_recloc, pnr_create_dt)
+sing2 <- setDT(sing2)
+rm(sing)
+sing2$conn <- "No connecting flights"
+sing2$conn_miss <- "Not possible"
+
+
+## doing multi leg PNRs: solo ones first ----
+
+mult <- temp_counts[which(temp_counts$counts >1),]
+head(mult)
+solo_mutl <- merge(solo, mult, by = c("pnr_recloc", "pnr_create_dt"))
+solo_mutl$counts <- NULL
+str(solo_mutl)
+
+
+## joining pnr-flt ----
+pnr_flt <- left_join(pnr, flt_skim, by = c("flt_orig_dt", "ownr_crr_cd", "schd_dest_stn_cd","schd_orig_stn_cd","flt_nb"))
+
+solo_mutl_det <- inner_join(solo_mutl, pnr_flt, by = c("pnr_recloc", "pnr_create_dt"))
+
+## doing the self join ----
+trial <- left_join(solo_mutl_det, solo_mutl_det, by = c("pnr_create_dt", "pnr_recloc"))
+name <- as.data.frame(names(trial))
+
+## removing records joined with themselves----
+trial1 <- trial %>% filter(schd_orig_stn_cd.x != schd_orig_stn_cd.y & schd_dest_stn_cd.x != schd_dest_stn_cd.y &
+                             schd_dprt_gts.x != schd_dprt_gts.y & schd_arr_gts.x != schd_arr_gts.y)
+trial1$seg_nbr_diff = trial1$itin_seg_nbr.y - trial1$itin_seg_nbr.x
+summary(trial1$seg_nbr_diff)
+max(trial1$itin_seg_nbr.y)
+
+
+check <- trial1[which(trial1$seg_nbr_diff == 49),]
+trial1 <- setDT(trial1)
+trial2 <- trial1[which(trial1$seg_nbr_diff == 1),]
+
+## time difference----
+str(trial2$actl_arr_gts.y)
+#trial2$schd_arr_gts.x <- as.POSIXct(trial2$schd_arr_gts.x, format = "%Y-%m-%d %H:%M")
+#trial2$schd_dprt_gts.x <- as.POSIXct(trial2$schd_dprt_gts.x, format = "%Y-%m-%d %H:%M")
+
+#trial2$schd_arr_gts.y <- as.POSIXct(trial2$schd_arr_gts.y, format = "%Y-%m-%d %H:%M")
+#trial2$schd_dprt_gts.y <- as.POSIXct(trial2$schd_dprt_gts.y, format = "%Y-%m-%d %H:%M")
+
+
+trial2$actl_arr_gts.x <- as.POSIXct(trial2$actl_arr_gts.x, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.x <- as.POSIXct(trial2$actl_dprt_gts.x, format = "%Y-%m-%d %H:%M")
+
+trial2$actl_arr_gts.y <- as.POSIXct(trial2$actl_arr_gts.y, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.y <- as.POSIXct(trial2$actl_dprt_gts.y, format = "%Y-%m-%d %H:%M")
+
+check <- head(trial2)
+
+trial2$time_diff <- as.numeric( difftime(trial2$actl_dprt_gts.y, trial2$actl_arr_gts.x, units = "mins"))
+
+check2 <- trial2[which(is.na(trial2$time_diff)==F),]
+min(check2$time_diff)
+
+
+## removing 10k records due to issue with flight times----
+qc <- check2 %>% filter(time_diff <0 )
+getwd()
+
+
+check3 <- check2 %>% filter(time_diff>=0)
+
+check3$miss <- ifelse(check3$time_diff <30, "Miss","Not miss")
+
+
+## taking distinct at a PNR, Leg level----
+check4 <- check3 %>% distinct(pnr_recloc, pnr_create_dt, schd_orig_stn_cd.x, schd_dest_stn_cd.x, flt_nb.x,
+                              ownr_crr_cd.x, flt_orig_dt.x, miss)
+
+check4 <- setDT(check4)
+check5 <- check4[,.(counts = .N), by = c("pnr_recloc", "pnr_create_dt", "schd_orig_stn_cd.x", "schd_dest_stn_cd.x", "flt_nb.x",
+                                         "ownr_crr_cd.x", "flt_orig_dt.x")]
+summary(check5$counts)
+check6 <- check5[which(check5$counts == 2),] ## only 3 records
+qc4 <- check3[which(check3$pnr_recloc == "HUBQNL"),]
+
+fwrite(check4, "/data/IDS/solo_multi_conn_miss_20190705.csv", row.names = F, verbose = T)
+
+
+rm(check, check2,check3,check5,check6)
+rm(solo,solo_mutl,solo_mutl_det,trial,trial1,trial2)
+gc(verbose = T)
+## now trying grp multi ----
+
+str(grp)
+str(mult)
+head(mult)
+grp_mult <- merge(grp, mult, by = c("pnr_recloc", "pnr_create_dt"))
+grp_mult$counts <- NULL
+str(grp_mult)
+
+## joining pnr-flt ----
+grp_mutl_det <- inner_join(grp_mult, pnr_flt, by = c("pnr_recloc", "pnr_create_dt"))
+
+## doing the self join ----
+trial <- left_join(grp_mutl_det, grp_mutl_det, by = c("pnr_create_dt", "pnr_recloc"))
+
+
+## removing records joined with themselves----
+trial1 <- trial %>% filter(schd_orig_stn_cd.x != schd_orig_stn_cd.y & schd_dest_stn_cd.x != schd_dest_stn_cd.y &
+                             schd_dprt_gts.x != schd_dprt_gts.y & schd_arr_gts.x != schd_arr_gts.y)
+trial1$seg_nbr_diff = trial1$itin_seg_nbr.y - trial1$itin_seg_nbr.x
+summary(trial1$seg_nbr_diff)
+max(trial1$itin_seg_nbr.y)
+
+
+check <- trial1[which(trial1$seg_nbr_diff == 49),]
+trial1 <- setDT(trial1)
+trial2 <- trial1[which(trial1$seg_nbr_diff == 1),]
+
+## time difference----
+str(trial2$actl_arr_gts.y)
+#trial2$schd_arr_gts.x <- as.POSIXct(trial2$schd_arr_gts.x, format = "%Y-%m-%d %H:%M")
+#trial2$schd_dprt_gts.x <- as.POSIXct(trial2$schd_dprt_gts.x, format = "%Y-%m-%d %H:%M")
+
+#trial2$schd_arr_gts.y <- as.POSIXct(trial2$schd_arr_gts.y, format = "%Y-%m-%d %H:%M")
+#trial2$schd_dprt_gts.y <- as.POSIXct(trial2$schd_dprt_gts.y, format = "%Y-%m-%d %H:%M")
+
+
+trial2$actl_arr_gts.x <- as.POSIXct(trial2$actl_arr_gts.x, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.x <- as.POSIXct(trial2$actl_dprt_gts.x, format = "%Y-%m-%d %H:%M")
+
+trial2$actl_arr_gts.y <- as.POSIXct(trial2$actl_arr_gts.y, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.y <- as.POSIXct(trial2$actl_dprt_gts.y, format = "%Y-%m-%d %H:%M")
+
+check <- head(trial2)
+
+trial2$time_diff <- as.numeric( difftime(trial2$actl_dprt_gts.y, trial2$actl_arr_gts.x, units = "mins"))
+
+check2 <- trial2[which(is.na(trial2$time_diff)==F),]
+min(check2$time_diff)
+
+
+## removing 10k records due to issue with flight times----
+qc <- check2 %>% filter(time_diff <0 )
+getwd()
+
+
+check3 <- check2 %>% filter(time_diff>=0)
+
+check3$miss <- ifelse(check3$time_diff <30, "Miss","Not miss")
+
+## taking distinct at a PNR, Leg level----
+check4 <- check3 %>% distinct(pnr_recloc, pnr_create_dt, schd_orig_stn_cd.x, schd_dest_stn_cd.x, flt_nb.x,
+                              ownr_crr_cd.x, flt_orig_dt.x, miss)
+
+check4 <- setDT(check4)
+check5 <- check4[,.(counts = .N), by = c("pnr_recloc", "pnr_create_dt", "schd_orig_stn_cd.x", "schd_dest_stn_cd.x", "flt_nb.x",
+                                         "ownr_crr_cd.x", "flt_orig_dt.x")]
+summary(check5$counts)
+check6 <- check5[which(check5$counts == 2),] ## only 3 records
+qc4 <- check3[which(check3$pnr_recloc == "HUBQNL"),]
+
+fwrite(check4, "/data/IDS/solo_multi_conn_miss_20190705.csv", row.names = F, verbose = T)
+
+
+rm(check, check2,check3,check5,check6)
+rm(solo,solo_mutl,solo_mutl_det,trial,trial1,trial2)
+gc(verbose = T)
+
+
+
+
+
+
+
+
+
+
+## retrying at scale : both solo and grp----
+
+
+temp <- pnr %>% distinct(pnr_recloc, pnr_create_dt, schd_dest_stn_cd, schd_orig_stn_cd, 
+                         flt_orig_dt,itin_seg_nbr,ownr_crr_cd,flt_nb)
+
+temp_counts <- temp[,.(counts = .N), by = c("pnr_recloc", "pnr_create_dt")]
+ 
+sing <- temp_counts[which(temp_counts$counts ==1),]
+head(sing)
+#check <- pnr[which(pnr$pnr_recloc == "JQXC8A"),]
+
+
+sing2 <- sing %>% distinct(pnr_recloc, pnr_create_dt)
+sing2 <- setDT(sing2)
+rm(sing)
+fwrite(sing2, "/data/IDS/Single leg PNRs.csv", row.names = F)
+sing2$conn <- "No connecting flights"
+sing2$conn_miss <- "Not possible"
+
+
+
+mult <- temp_counts[which(temp_counts$counts >1),]
+head(mult)
+flt_skim <- flt_skim %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_orig_stn_cd,schd_dest_stn_cd,
+                                actl_arr_gts, actl_dprt_gts)
+temp_flt <- left_join(temp, flt_skim, by = c("flt_nb", "flt_orig_dt", "ownr_crr_cd", "schd_orig_stn_cd","schd_dest_stn_cd"))
+
+str(mult)
+mult$counts <- NULL
+
+
+mult_det <- inner_join(mult, temp_flt, by = c("pnr_recloc", "pnr_create_dt"))
+
+
+trial_self <- left_join(mult_det, mult_det, by = c("pnr_recloc", "pnr_create_dt"))
+
+trial1 <- trial_self %>% filter(schd_orig_stn_cd.x != schd_orig_stn_cd.y & schd_dest_stn_cd.x != schd_dest_stn_cd.y &
+                                  actl_dprt_gts.x != actl_dprt_gts.y & actl_arr_gts.x != actl_arr_gts.y)
+trial1$seg_nbr_diff = trial1$itin_seg_nbr.y - trial1$itin_seg_nbr.x
+trial2 <- trial1[which(trial1$seg_nbr_diff == 1),]
+
+str(trial2)
+trial2$actl_arr_gts.x <- as.POSIXct(trial2$actl_arr_gts.x, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.x <- as.POSIXct(trial2$actl_dprt_gts.x, format = "%Y-%m-%d %H:%M")
+
+trial2$actl_arr_gts.y <- as.POSIXct(trial2$actl_arr_gts.y, format = "%Y-%m-%d %H:%M")
+trial2$actl_dprt_gts.y <- as.POSIXct(trial2$actl_dprt_gts.y, format = "%Y-%m-%d %H:%M")
+
+trial2$time_diff <- as.numeric( difftime(trial2$actl_dprt_gts.y, trial2$actl_arr_gts.x, units = "mins"))
+check2 <- trial2[which(is.na(trial2$time_diff)==F),]
+
+
+check3 <- check2 %>% filter(time_diff>=0)
+check4 <- check3 %>% mutate(miss = ifelse(check3$time_diff <30, "Miss","Not miss"))
+
+check4 <- setDT(check4)
+
+check5 <- check4 %>% distinct(pnr_create_dt, pnr_recloc, miss)
+check5$rank <- ifelse(check5$miss == "Miss", 1, 0)
+
+check5 <- setDT(check5)
+check6 <- check5[,.(max_rank = max(rank)) , by = c("pnr_create_dt", "pnr_recloc")]
+
+check6 <- check6 %>% rename(rank = max_rank)
+
+check7 <- check6 %>% mutate(final_flag = ifelse(rank == 1, "Miss", "Not Miss"))
+check7$rank <- NULL
+fwrite(check7, "/data/IDS/multi leg miss not miss flag.csv", row.names = F)
+
+
+
+
+
