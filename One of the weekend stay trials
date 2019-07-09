@@ -1,0 +1,375 @@
+##trying EDA on complaints data
+
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(h2o)
+h2o.init()
+
+
+load("/data/IDS/newclassification_20190625.RData")
+
+wknd <- fread("/data/IDS/weekend_travel.csv")
+
+wknd$pnr_create_dt <- gsub(pattern = "T18:30:00Z", "", wknd$pnr_create_dt)
+wknd$flt_orig_dt <- gsub(pattern = "T18:30:00Z", "", wknd$flt_orig_dt.x)
+wknd$flt_orig_dt.x <- NULL
+str(wknd)
+
+
+
+wknd$pnr_create_dt <- as.Date(wknd$pnr_create_dt, format = "%Y-%m-%d")
+wknd$flt_orig_dt <- as.Date(wknd$flt_orig_dt, format = "%Y-%m-%d")
+str(wknd)
+
+ads <- fread("/data/IDS/ads_20190621.csv")
+str(ads$pnr_create_dt)
+str(ads$flt_orig_dt)
+
+
+unique(wknd$weekend_travel_flag)
+
+length(unique(wknd$pnr_recloc))
+ads$pnr_create_dt <- as.Date(ads$pnr_create_dt, format = "%Y-%m-%d")
+ads$flt_orig_dt <- as.Date(ads$flt_orig_dt, format = "%Y-%m-%d")
+
+chk <- wknd %>% distinct(pnr_recloc, weekend_travel_flag)
+str(wknd)
+str(ads)
+check <- left_join(ads, wknd, by = c("pnr_recloc", "pnr_create_dt", "flt_orig_dt"))
+
+unique(check$weekend_travel_flag)
+
+
+
+
+qc1 <- ads %>% distinct(pnr_recloc, flt_orig_dt, pnr_create_dt)
+qc2 <- wknd %>% distinct(pnr_recloc,flt_orig_dt, pnr_create_dt)
+
+qc3 <- inner_join(qc1, qc2, by =  c("pnr_recloc","flt_orig_dt", "pnr_create_dt"))
+
+
+qc4 <- ads[which(is.na(ads$flt_orig_dt)),]
+
+
+str(wknd)
+str(ads)
+
+
+
+
+## trying again----
+
+wknd2 <- fread("/data/IDS/weekend_travel2.csv")
+str(wknd2)
+wknd2$pnr_create_dt <- as.Date(wknd2$pnr_dt, format = "%Y-%m-%d")
+wknd2$flt_orig_dt <- as.Date(wknd2$flt_dt, format = "%Y-%m-%d")
+
+
+## final soultion ----
+## the dates were decreased by 1 for some random reason
+wknd2$pnr_create_dt2 <- wknd2$pnr_create_dt+1
+wknd2$flt_orig_dt2 <- wknd2$flt_orig_dt+1
+
+
+wknd3 <- wknd2 %>% select(pnr_recloc, pnr_create_dt2, flt_orig_dt2, weekend_travel_flag) %>% rename(pnr_create_dt = pnr_create_dt2,
+                                                                               flt_orig_dt = flt_orig_dt2)
+str(wknd3)
+str(ads$flt_orig_dt)
+str(wknd2$flt_orig_dt)
+
+
+check <- left_join (ads, wknd3, by = c("pnr_create_dt", "pnr_recloc", "flt_orig_dt"))
+unique(check$weekend_travel_flag)
+
+qc <- ads %>% filter(pnr_recloc == "F5622H")
+qc2 <- check %>% filter(is.na(weekend_travel_flag)==F)
+name <- as.data.frame(names(check))
+check <- setDT(check)
+check$wknd_score <- ifelse(check$weekend_travel_flag == "Y", -1, ifelse(check$weekend_travel_flag == "N", 0.5, ifelse(is.na(check$weekend_travel_flag)==T, 0,100)))
+unique(check$wknd_score)
+qc <- check %>% filter(is.na(wknd_score)) %>% distinct(weekend_travel_flag)
+
+rm(list = setdiff(ls(), "check"))
+
+check$wknd_score[is.na(check$wknd_score)] <- 0
+unique(check$wknd_score)
+
+name <- as.data.frame(names(check))
+
+# converting no weekend trips records also to 0
+check$wknd_score[check$wknd_score == 0.5] <- 0
+check$wknd_score[check$wknd_score == -1] <- (-0.5)
+
+check <- check %>% mutate(ovr_score3 = 
+                            ((0.8*cot_score) + (0.2*tier_score) + (0.7*g_s_score) + (0.6*adv_score) + (0.5*day_time_score) + (0.2*wknd_score))/(0.8 + 0.2 + 0.7 + 0.6 + 0.5 + 0.2))
+summary(check$ovr_score3)
+
+
+check <- check %>% mutate(busi_leis3 = ifelse( abs(ovr_score3) < 0.25, "UTD", ifelse(ovr_score3>0, "Business","Leisure")))
+unique(check$busi_leis3)
+
+table(check$busi_leis3)
+
+fwrite(check, "/data/IDS/ads_20190627.csv",row.names = F)
+
+qc <- check %>% group_by(busi_leis3) %>% 
+  summarise(min(ovr_score3), max(ovr_score3))
+rm(list = setdiff(ls(), "check"))
+
+fwrite(check, "/data/IDS/ads_20190627.csv", row.names = F,verbose = T)
+
+
+## EDA on the flags----
+check <- setDT(check)
+
+qaz <- check[, .(aver = mean(ovr_score3), mini = min(ovr_score3), maxi = max(ovr_score3)), by = busi_leis3]
+
+
+name <- as.data.frame(names(check))
+
+check <- setDT(check)
+pivot <- check[,.(counts = .N),by = c("dly_hours", "haul", "dom_intl_cd", "case_flag", "loy_flag", "busi_leis3")]
+
+qc <- check[which(check$dly_hours == ""),]
+getwd()
+
+base_pivot <- check[,.(counts = .N), by = c("case_flag", "busi_leis3")]
+
+
+# upgrading business_leis ----
+temp <- check %>% distinct (pnr_create_dt, pnr_recloc, busi_leis3)
+
+temp <- setDT(temp)
+temp1 <- temp[, .(counts = .N), by = c("pnr_recloc", "pnr_create_dt")]
+temp2 <- temp1[which(temp1$counts ==1),]
+temp3 <- temp1[which(temp1$counts > 1),]
+
+temp4 <- left_join(temp2, temp, by = c("pnr_create_dt", "pnr_recloc"))# clean ones - keep aside
+temp5 <- left_join (temp3, temp, by = c("pnr_recloc", "pnr_create_dt"))# dirty pigs - clean up
+
+temp5 <- temp5 %>% mutate(purp_score = ifelse(busi_leis3 == "Business", 2, ifelse(busi_leis3 == "Leisure", 1, 0)))
+temp5 <- setDT(temp5)
+temp6 <- temp5[, .(pref = max(purp_score)), by = c("pnr_recloc", "pnr_create_dt")]
+temp6 <- temp6 %>% rename(purp_score = pref)
+str(temp6)
+
+temp7 <- inner_join(temp5, temp6, by = c("pnr_recloc", "pnr_create_dt", "purp_score"))
+temp7$purp_score <- NULL
+str(temp4)
+
+temp4$counts <- NULL
+temp7$counts <- NULL
+
+new_purp <- rbind(temp4, temp7)
+str(new_purp)
+new_purp <- new_purp %>% rename(new_purp = busi_leis3)
+new_check <- left_join(check , new_purp, by = c("pnr_recloc", "pnr_create_dt"))
+flt_pnr_piv <- check[,.(counts = .N), by = c("flt_nb","flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd","busi_leis3","case_flag",
+                                             "ownr_crr_cd","ml_dc_cd", "haul", "dom_intl_cd", "dly_hours", "pnr_recloc", "pnr_create_dt")]
+
+rm(list = setdiff(ls(), "new_check"))
+
+## qcing the upgrades ----
+new_check <- setDT(new_check)
+qc <- new_check %>% distinct(pnr_recloc, pnr_create_dt, new_purp)## worked
+rm(qc)
+ads <- setDT(new_check)
+rm(new_check)
+
+## creating numbers at a flight level----
+
+try <- ads %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd, schd_orig_stn_cd,
+                        pnr_recloc, pnr_create_dt, cbn_cd, seat_assignment,upgrade_cd, downgrade_ind,
+                        surname_nbr, given_name_nbr, first_leg_dep_dt, itin_seg_nbr, cur_seat_status_cd,new_purp)
+getwd()
+pnr <- fread("/data/IDS/pnr_cons_20190612.csv")
+str(try)
+
+#rm(pnr, try)
+try <- setDT(try) 
+getwd()
+
+
+try2 <- try[, .(counts = .N), by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd","new_purp")]
+
+library(tidyr)
+str(try2)
+check <- spread(data = try2,key = new_purp, value = counts)
+check$Business[is.na(check$Business)] <- 0
+check$Leisure[is.na(check$Leisure)] <- 0
+check$UTD[is.na(check$UTD)] <- 0
+rm(check)
+
+
+## qcing ----
+try3<- ads %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd, schd_orig_stn_cd,enp_pax_ct)
+try4 <- left_join (check,try3, by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+try4 <- try4 %>% mutate(total = Business+Leisure+UTD)
+
+try4$enp_pax_ct[is.na(try4$enp_pax_ct)] <- 0
+try4 <- try4 %>% mutate(checking = total - enp_pax_ct)
+try
+summary(try4$checking)
+summary(try4$total)
+
+fwrite(try4, "/data/IDS/leg_level_purp_20190627.csv", row.names = F)
+
+## continuing EDA ----
+
+summary(try4$Business)
+summary(try4$Leisure)
+summary(try4$UTD)
+summary(try4$total)
+
+try4 <- try4 %>% mutate(perc_busi = Business/total,
+                        perc_leis = Leisure/total,
+                        perc_utd = UTD/total)
+
+mean(try4$perc_busi)+mean(try4$perc_leis)+mean(try4$perc_utd)
+
+
+str(ads)
+leg_compl <- ads[, .(compl = sum(case_flag)), 
+                 by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd")]
+min(leg_compl$compl)
+no_compl_leg <- leg_compl[which(leg_compl$compl == 0),]
+no_compl_leg_full <- inner_join(try4, no_compl_leg, 
+                                by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+
+complained_legs <- anti_join(try4, no_compl_leg, 
+                             by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+
+## checking busi vs leis in these legs----
+summary(complained_legs$perc_busi)
+summary(complained_legs$perc_leis)
+summary(complained_legs$perc_utd)
+
+summary(no_compl_leg_full$perc_busi)
+summary(no_compl_leg_full$perc_leis)
+summary(no_compl_leg_full$perc_utd)
+
+
+
+flt_purp_summ <- ads[, .(compl = sum(case_flag)), 
+                     by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd", "new_purp")]
+
+check <- spread(data = flt_purp_summ,key = new_purp, value = compl)
+
+
+summary(check$Business)
+summary(check$Leisure)
+summary(check$UTD)
+
+
+sum(ads$case_flag)
+
+
+## recovering from the crash ----
+ads <- fread("/data/IDS/ads_20190627.csv")
+leg_purp <- fread("/data/IDS/leg_level_purp_20190627.csv")
+str(ads)
+str(leg_purp)
+
+str(ads$pnr_create_dt)
+ads$pnr_create_dt <- as.Date(ads$pnr_create_dt, format = "%Y-%m-%d")
+ads$flt_orig_dt <- as.Date(ads$flt_orig_dt, format = "%Y-%m-%d")
+leg_purp$flt_orig_dt <- as.Date(leg_purp$flt_orig_dt, format = "%Y-%m-%d")
+
+try <- ads %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd, schd_orig_stn_cd,
+                        pnr_recloc, pnr_create_dt, cbn_cd, seat_assignment,upgrade_cd, downgrade_ind,
+                        surname_nbr, given_name_nbr, first_leg_dep_dt, itin_seg_nbr, cur_seat_status_cd,busi_leis3)
+try2 <- try[, .(counts = .N), by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd","busi_leis3")]
+library(tidyr)
+str(try2)
+check <- spread(data = try2,key = busi_leis3, value = counts)
+check$Business[is.na(check$Business)] <- 0
+check$Leisure[is.na(check$Leisure)] <- 0
+check$UTD[is.na(check$UTD)] <- 0
+#rm(check)
+
+try3<- ads %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd, schd_orig_stn_cd,enp_pax_ct)
+try4 <- left_join (check,try3, by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+try4 <- try4 %>% mutate(total = Business+Leisure+UTD)
+
+try4$enp_pax_ct[is.na(try4$enp_pax_ct)] <- 0
+try4 <- try4 %>% mutate(checking = total - enp_pax_ct)
+
+
+
+
+
+
+
+
+try4$enp_pax_ct[is.na(try4$enp_pax_ct)] <- 0
+try4 <- try4 %>% mutate(checking = total - enp_pax_ct)
+summary(try4$Business)
+summary(try4$Leisure)
+summary(try4$UTD)
+summary(try4$total)
+
+try4 <- try4 %>% mutate(perc_busi = Business/total,
+                        perc_leis = Leisure/total,
+                        perc_utd = UTD/total)
+summary(try4$perc_busi)
+summary(try4$perc_leis)
+summary(try4$perc_utd)
+
+
+
+leg_compl <- ads[, .(compl = sum(case_flag)), 
+                 by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd")]
+min(leg_compl$compl)
+no_compl_leg <- leg_compl[which(leg_compl$compl == 0),]
+no_compl_leg_full <- inner_join(try4, no_compl_leg, 
+                                by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+
+complained_legs <- anti_join(try4, no_compl_leg, 
+                             by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+summary(complained_legs$perc_busi)
+summary(complained_legs$perc_leis)
+summary(complained_legs$perc_utd)
+
+summary(no_compl_leg_full$perc_busi)
+summary(no_compl_leg_full$perc_leis)
+summary(no_compl_leg_full$perc_utd)
+
+
+flt_purp_summ <- ads[, .(compl = sum(case_flag)), 
+                     by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd", "busi_leis3")]
+check <- spread(data = flt_purp_summ,key = busi_leis3, value = compl,fill = 0)
+
+
+summary(check$Business)
+summary(check$Leisure)
+summary(check$UTD)
+
+## checking this for complain legs--
+complaining_legs2 <- complained_legs %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd,schd_orig_stn_cd)
+hmmm <- inner_join(check, complaining_legs2, 
+                   by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+
+summary(hmmm$Business)
+summary(hmmm$Leisure)
+summary(hmmm$UTD)
+
+str(complained_legs)
+
+## pulling in flt characteristics----
+flt_char <- ads %>% distinct(ownr_crr_cd, flt_nb, flt_orig_dt, schd_dest_stn_cd,schd_orig_stn_cd, haul, ml_dc_cd,
+                             haul, schd_ac_typ_cd, actl_ac_typ_cd,dly_div_cd,dly_typ_cd,dly_fctr_cd,dly_hours ,
+                             dep_day ,arr_day,dom_intl_cd)
+num_complaints <- left_join(check, flt_char, 
+                            by = c("ownr_crr_cd", "flt_nb", "flt_orig_dt", "schd_dest_stn_cd", "schd_orig_stn_cd"))
+
+sum(num_complaints$Business)+sum(num_complaints$Leisure)+sum(num_complaints$UTD)
+num_complaints$tot_comp <- num_complaints$Business + num_complaints$Leisure + num_complaints$UTD
+num_complaints <- setDT(num_complaints)
+master_piv <- num_complaints[,.(tot = sum(tot_comp), busi = sum(Business), leis = sum(Leisure)),
+                             by = c("ownr_crr_cd", "dom_intl_cd", "haul", "ml_dc_cd","dly_hours")]
+fwrite(master_piv, "/data/IDS/master_piv_20190627.csv", row.names = F)
+
+
+## final grp vs solo--
+zzz <- ads[,.(compl = sum(case_flag)), by = c("grp_solo_flag", "busi_leis3")]
